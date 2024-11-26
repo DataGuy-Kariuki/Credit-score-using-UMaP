@@ -1,0 +1,363 @@
+---
+title: "CREDIT SCORES"
+author: "Reuben"
+date: "2024-11-26"
+output:
+  word_document: default
+  html_document: default
+---
+
+## Analyzing Credit Scores with tidymodels in R
+
+Welcome to Analyzing Credit Scores with tidymodels in R!
+
+In this live training, we'll explore what differentiates consumer credit score levels and demonstrate how dimensionality reduction can retain much of the information in a dataset while reducing its size. We'll use the embed and tidymodels to build UMAP and decision tree models. We will to demonstrate the concept of information by comparing the performance of decision tree models before and after applying UMAP dimensionality reduction.
+
+### Setup Environment
+
+First, we'll load the necessary packages -- tidyverse, tidymodels, embed (note we will need to install embed).
+
+I'm assuming you've used the tidyverse before. If you have not used tidymodels or embed packages before, here's a quick summary.
+
++ tidymodels -- next generation of packages that incorporate tidyverse principles into machine learning and modeling.
++ embed -- contains extra recipes steps to create "embeddings" (i.e., encoding predictors)
+
+
+```{r echo=TRUE}
+# install the 'embed' package
+#install.packages('embed')
+
+# load the needed packages
+library(tidyverse)
+library(tidymodels)
+library(embed)
+		
+# set options to enlarge our plots
+options(repr.plot.width=12, repr.plot.height=16)
+
+```
+
+#### Load the Credit Data
+
+The data was adapted from Kaggle's "Credit score classification" data (thanks Rohan Paris!).
+
+We'll load it using read_csv() and take a glimpse of it.
+
+```{r echo=TRUE}
+# the credit score data is available here
+data_url <- "https://assets.datacamp.com/production/repositories/6081/datasets/e02471e553bc28edddc1fe862666d36e04daed80/credit_score.csv"
+
+# use read_csv to load the data
+credit_df <- read_csv(data_url)
+
+# reorder the credit_score factor levels
+credit_df <- credit_df %>% 
+  mutate(credit_score = factor(credit_score, levels = c("Poor", "Standard", "Good")))
+
+# look at the available features
+glimpse(credit_df)
+```
+
+The data's dimensionality is just its number of columns. credit_df has 23 dimensions, or features -- one target variable (credit_score) and 22 predictor variables.
+
+The target variable -- credit_score -- is categorical and has three levels: Poor, Standard, and Good. So, from a machine learning perspective we'll be dealing with a classification problem.
+
+Our core objective is to understand what differentiates consumers with poor, standard, and good credit scores. In short, we want to explain why consumers' credit scores differ. Along the way, we'll learn about UMAP (feature extraction algorithm) and the tidymodels framework.
+
+### Exploration
+
+Let's visually explore credit_df a little and see if we can understand why consumers have different credit scores.
+
+NOTE:: As humans we can't visualize high-dimensional data -- we are limited to about three dimensionals (maybe four, if you add animation to capture time).
+
+What differentiates consumer credit scores?
+Let's generate a few plots to see if we can discover a few predictors that do a good job of separating the credit scores.
+
+
+### Annual income density plot
+
+Let's start by plotting the distribution of annual income for each of the three credit score levels.
+
+```{r echo=TRUE, warning=FALSE}
+# plot annual_income distribution for each credit score level
+credit_df %>%  
+  ggplot(aes(x = annual_income, color = credit_score)) +
+  geom_density() +
+  xlim(0, 200000)
+
+```
+
+Takeaway: Those with lower annual income tend to have poorer credit scores. That means that annual income contains information that helps us determine credit score.
+
+
+### Age density plot
+
+Let's explore the age of consumers by creating a density plot of age for each of the credit score levels.
+
+```{r echo=TRUE}
+# plot age distribution for each credit_score level
+credit_df %>%  
+  ggplot(aes(x = age, color = credit_score)) +
+  geom_density()
+```
+
+Takeaway: Older consumers tend to have better credit score. In other words, age also contains some information that is useful for determining credit_score.
+
+
+### Delay from due date vs. credit history months
+
+- Delay from due date = the average number of days late on payment
+
+- Credit history months = the number of months of credit history the consumer has on record
+
+- Let's explore both of these features using a scatterplot that separates the credit score levels by color.
+
+```{r echo=TRUE}
+# plot delay_from_due_date vs credit_history_months 
+credit_df %>%  
+  ggplot(aes(x = delay_from_due_date, y = credit_history_months , color = credit_score)) +
+  geom_jitter(alpha = 0.4)
+
+
+```
+
+
+Note that geom_jitter() (instead of geom_point()) prevents the data points from overlapping. This helps us to better see the colors of the three credit levels.
+
+Takeaway: Both delay_from_due_date and credit_history_months contain information about credit_score.
+
+
+### Credit utilization ratio vs number of credit cards
+
+credit utilization = the amount of their credit limit the consumer has used
+ 
+Like above, let's explore credit utilization ratio and the number of credit cards a consumer has with a scatterplot.
+
+
+```{r echo=TRUE, warning=FALSE}
+# plot credit_utilization_ratio vs. num_credit_card
+credit_df %>%  
+  ggplot(aes(x = credit_utilization_ratio, y = num_credit_card, color = credit_score)) +
+  geom_jitter(alpha = 0.4) +
+  ylim(0, 10)
+
+```
+
+The number of credit cards separates the consumers' credit levels pretty well. Not surprisingly, those with more credit cards tend to have poorer credit. So, num_credit_card has valuable information about a consumer's credit score.
+
+### Conclusion
+
+It would take a long time to visit every combination of the predictors to determine which predictors help distinguish information about consumers' credit levels. In this process, we'd discover that some predictors contain little to no information consumer's credit levels. Dropping these features would simplify the data without significantly reducing the information in the data.
+
+Dimensionality reduction is all about eliminating the useless noise and honing in on the "signal" -- the useful information that helps us accomplish our goal in predicting the target variable.
+
+#### Enter UMAP!
+
+#### UMAP
+
+UMAP is a feature extraction technique. We will use it to reduce our 22 predicting features (dimensions) down to 2 dimensions, while still keeping as much of the original information as possible. 
+We'll later demonstrate how much information was retained by fitting a decision tree model to predict credit score level on both the raw data and the UMAP tranformed data and observer the performance difference.
+
+### Create the tidymodels recipe
+
+A recipe in tidymodels is just like a cooking recipe -- it's a series of steps you apply to the data to get a predictable, repeatable desired outcome.
+
+##### Our UMAP recipe will have two steps:
+
+Normalize the data. We do this so that the unequal ranges of the features will not have unequal leverage in determining their importance in determing credit score level.
+Apply UMAP
+In the code below, we create the recipe object and then add these steps to it.
+
+#### Here are some important things to notice:
+
+We apply step_normalize() only to the numeric predictors -- we can't normalize categorical variables and the target variable is categorical.
+We apply step_umap() to all the predictors, but not the target variable because we need to keep that separate to train the model -- UMAP can handle both continuous and categorical variables.
+We specify target variable with the outcome argument -- outcome = vars(credit_score).
+We specify that we want to reduce the data to two dimensionals with num_comp in step_umap().
+
+
+```{r echo=TRUE}
+# create the UMAP recipe with the normalize and UMAP steps
+umap_recipe <- recipe(credit_score ~ ., data = credit_df) %>% 
+   step_normalize(all_numeric_predictors()) %>% 
+   step_umap(all_predictors(), outcome = vars(credit_score), num_comp = 2)
+```
+
+###Train the recipe; and extract and plote the data
+
+Now, let's apply the recipe and get the transformed data so we can plot it.
+
+The prep() function "trains" the recipe on the data. In other words, it applies UMAP to the data.
+
+Then we use juice() to extract the (UMAP) transformed data from the recipe, which we will plot.
+
+```{r echo=FALSE}
+# prepare (train) the recipe and juice (extract) the transformed data
+umap_credit_df <-
+  umap_recipe %>% 
+  prep() %>% 
+  juice()
+```
+
+Before we plot the data, take a glimpse of it. Notice the two UMAP dimensions -- data reduction complete!
+
+```{r echo=TRUE}
+# take a look at the UMAP transformed data
+glimpse(umap_credit_df)
+```
+
+#### Plot the UMAP dimensions
+
+Ultimately, UMAP is most useful for visualizing high-dimensional data. Here are some nice examples. So, let's plot those two dimensions and color code the credit levels, like before, and see how well the UMAP transformation separates the credit score levels.
+
+```{r echo=TRUE}
+# Create a scatterplot of the UMAP dimensions, coloring credit score level
+umap_credit_df %>%
+   ggplot(aes(x = UMAP1, y = UMAP2, color = credit_score)) +
+   geom_point(alpha = 0.2)
+```
+
+UMAP does a nice job separating out the credit scores, right?
+
+But you might be wondering, "How did it separate the credit scores?" In other words, what does UMAP1 and UMAP2 mean? That's a downside to feature extraction -- the extracted dimensions are often difficult to interpret.
+
+### Building UMAP into a Decision Tree Model
+
+Now, let's turn our attention to integrating dimensionality reduction into a tidymodels workflow. In this training, we do this to illustrate the concept of information and that UMAP (like other feature extraction techniques), foundationally, seeks to retain information in the data while still it.
+
+Let's build a classification model with and without UMAP and compare their performance. The idea is that if UMAP cuts too much information, the classification model's performance will take a big hit.
+
+
+### Prepare the test and train datasets
+
+Now, let's create the train and test sets. tidymodels (specifically, the rsample package) makes this easy.
+
+initial_split() defaults to 75% for the training set and 25% for the testing set. We'll accept those defaults.
+
+Also, notice we set the random number generator seed to make this example reproducible.
+
+```{r echo=TRUE}
+# set seed to make this reproducible
+set.seed(3)
+
+# Initialize the data split
+credit_split <- initial_split(credit_df)
+
+# Extract the train dataset
+train <- training(credit_split)
+
+# Extract the test dataset
+test <- testing(credit_split)
+
+```
+
+
+
+### Build a tidymodels workflow without UMAP
+
+Now, it's time to build the base model - the model from the original credit_df data, without using UMAP.
+
+A tidymodels workflow allows us to bundle recipe code with model building code -- it's a pipeline for pre-processing, modeling, and post-processing.
+
+So, let's create the recipe and the model and then bundle them into a worflow object.
+
+
+### Create the recipe
+
+In this case, it's an empty recipe -- we don't want to modify the original credit_df data. Notice that we pass the recipe object a formula -- this basically says, "Use credit_score as the target variable".
+
+```{r echo=TRUE}
+# create an empty recipe object with credit_score as the target variable
+dt_recipe <- recipe(credit_score ~ ., data = train)
+```
+
+### Create the decision tree model
+
+The parnsip package in tidymodels provides a simple-to-use interface for creating models. Let's instantiate a decision tree model for classification.
+
+```{r echo=TRUE}
+# create a decision tree model for classification
+dt_model <- decision_tree(mode = "classification")
+```
+
+Notice we specify mode = "classification" because many decision tree algorithms (e.g., random forest, CART, ID3) can perform regression.
+
+NOTE: decision_tree() abstracts away model implementation details. You can specifiy the implementation you use with the engine argument.
+
+
+*Add the recipe and model to the workflow*
+
+```{r echo=TRUE}
+# create a workflow and add the recipe and model to it
+dt_workflow <- workflow() %>% 
+   add_recipe(dt_recipe) %>% 
+   add_model(dt_model)
+```
+
+Train the model
+To be precise, we are fitting the recipe and the model on the training data set when we call this code
+
+```{r echo=TRUE}
+# train the model (that is, fit the workflow to the train data)
+dt_fit <- dt_workflow %>% 
+   fit(data = train)
+```
+
+
+Predict the test data
+
+
+```{r echo=TRUE}
+# predict the test data with the trained model
+predict_df <- test %>% 
+   bind_cols(predict = predict(dt_fit, test))
+```
+
+#### Evaluate the model's test predictions
+
+The yardstick package in tidymodels provides an interface to evaluate models with a variety of metrics. Here we will use the F-measure, which combines the model recall and precision.
+
+
+```{r echo=TRUE}
+# Calculate the F-measure of the test predictions
+f_meas(predict_df, credit_score, .pred_class)
+```
+
+And that will serve has our benchmark comparison for UMAP. Remember, we are just getting a feel for how much information UMAP retained as it reduced the data to two dimensions.
+
+
+#### Build a tidymodel workflow with UMAP
+
+Now, let's repeat the above process. The only difference is the recipe.
+
+We'll add the same two steps we used above when we plotted the UMAP data -- step_normalize() and step_umap() -- to preprocess the data before building the decision tree model.
+
+NOTE: This decision tree model will only be trained on two predictors -- UMAP1 and UMAP2; whereas, the prior model was trained on 22 predictors.
+
+
+```{r echo=TRUE}
+# create the UMAP recipe
+dt_recipe <- recipe(credit_score ~ ., data = train) %>% 
+   step_normalize(all_numeric_predictors())  %>% 
+   step_umap(all_numeric_predictors(), outcome = vars(credit_score), num_comp = 2)
+
+# create the decision tree model
+dt_model <- decision_tree(mode = "classification")
+
+# add the recipe and model to the workflow
+dt_workflow <- workflow() %>% 
+   add_recipe(dt_recipe) %>% 
+   add_model(dt_model)
+
+# train the model
+dt_fit <- dt_workflow %>% 
+   fit(data = train)
+
+# predict the test set
+predict_df <- test %>% 
+   bind_cols(predict = predict(dt_fit, test))
+
+# evaluate the model performance on the test set
+f_meas(predict_df, credit_score, .pred_class)
+```
+With UMAP, the model's performance (based on the F-measure) dropped to 0.548 (from 0.622). So, not surprisingly, we lost some information through the UMAP reduction. But for going from 22 to 2 dimensions, the model based on UMAP performs pretty well compared to the model based on the original credit_df data. Depending on the context, this performance reduction may or may not be acceptable.
